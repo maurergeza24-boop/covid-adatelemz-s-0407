@@ -3,30 +3,33 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 
-st.set_page_config(page_title="COVID-19 Vizualizáció", layout="wide")
+st.set_page_config(page_title="COVID-19 Precíz Vizualizáció", layout="wide")
 
 # --- OLDALSÁV ---
 st.sidebar.title("⚙️ Beállítások")
-mode = st.sidebar.radio("Válassz adatforrás megtekintéséhez:", ["Szimulált adatok", "Google Sheets (Élő adatok)"])
+mode = st.sidebar.radio("Válassz adatforrást:", ["Szimulált adatok", "Google Sheets (Élő adatok)"])
 
-# A kért Google Sheet link
+# A Google Sheet CSV export linkje
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1e4VEZL1xvsALoOIq9V2SQuICeQrT5MtWfBm32ad7i8Q/export?format=csv&gid=311133316"
 
-# Keresett kulcsszavak és a hozzájuk rendelt szép név
+# PONTOS kulcsszavak a napi adatokhoz (hogy elkerüljük az összesített adatokat)
 mapping_rules = {
-    "elhunyt": "Új elhunytak száma",
-    "gyógyult": "Új gyógyultak száma",
-    "kórház": "Kórházi ápoltak száma",
-    "lélegeztető": "Lélegeztetőgépen lévők"
+    "Az új elhunytak száma naponta": "Napi elhunytak",
+    "Új gyógyultak naponta": "Napi gyógyultak",
+    "Kórházi ápoltak száma": "Kórházi ápoltak",
+    "Lélegeztetőgépen lévők száma": "Lélegeztetőgépen"
 }
 
 def clean_and_interpolate(df, columns):
-    """0-k helyett átlagolás (lineáris interpoláció)"""
+    """0-k helyett átlagolás (lineáris interpoláció) a kért simításhoz"""
     df_res = df.copy()
     for col in columns:
         if pd.api.types.is_numeric_dtype(df_res[col]):
+            # A 0-kat NaN-ra cseréljük, hogy az interpoláció működjön
             df_res[col] = df_res[col].replace(0, np.nan)
+            # Lineáris interpoláció (előtte-utána átlaga)
             df_res[col] = df_res[col].interpolate(method='linear', limit_direction='both')
+            # Kerekítés és visszaalakítás egésszé
             df_res[col] = df_res[col].fillna(0).round().astype(int)
     return df_res
 
@@ -37,67 +40,65 @@ if mode == "Szimulált adatok":
     dates = pd.date_range(start="2022-01-01", periods=150)
     df = pd.DataFrame({
         'Dátum': dates,
-        'Új elhunytak száma': np.random.randint(0, 30, 150),
-        'Új gyógyultak száma': np.random.randint(50, 400, 150),
-        'Kórházi ápoltak száma': np.random.randint(400, 2000, 150),
-        'Lélegeztetőgépen lévők': np.random.randint(10, 100, 150)
+        'Napi elhunytak': np.random.randint(0, 30, 150),
+        'Napi gyógyultak': np.random.randint(50, 400, 150),
+        'Kórházi ápoltak': np.random.randint(400, 2000, 150),
+        'Lélegeztetőgépen': np.random.randint(10, 100, 150)
     })
-    # Teszt nullák
-    for c in df.columns[1:]:
-        df.loc[np.random.choice(df.index, 10), c] = 0
     st.sidebar.success("Szimulációs üzemmód aktív")
 
 else:
     try:
-        # Adatok beolvasása
+        # Adatok beolvasása a Google Sheets-ből
         raw_df = pd.read_csv(SHEET_URL)
         
-        # Tisztított DataFrame összeállítása
-        clean_cols = {}
+        # Oszlopok keresése és szűrése
+        selected_cols = {}
         
-        # 1. Dátum keresése
-        date_col = next((c for c in raw_df.columns if 'dátum' in str(c).lower()), None)
-        if date_col:
-            clean_cols[date_col] = 'Dátum'
+        # Dátum keresése
+        if 'Dátum' in raw_df.columns:
+            selected_cols['Dátum'] = 'Dátum'
         
-        # 2. A kért 4 szempont keresése (csak az első találatot vesszük mindegyikből)
-        for key, friendly_name in mapping_rules.items():
-            found = next((c for c in raw_df.columns if key in str(c).lower()), None)
-            if found and found not in clean_cols:
-                clean_cols[found] = friendly_name
+        # A megadott 4 pontos oszlopnév keresése
+        for original_name, friendly_name in mapping_rules.items():
+            if original_name in raw_df.columns:
+                selected_cols[original_name] = friendly_name
         
-        if len(clean_cols) > 1:
-            # Csak a megtalált és egyedivé tett oszlopokat tartjuk meg
-            df = raw_df[list(clean_cols.keys())].copy()
-            df.columns = [clean_cols[c] for c in df.columns]
+        if len(selected_cols) > 1:
+            df = raw_df[list(selected_cols.keys())].copy()
+            df.columns = [selected_cols[c] for c in df.columns]
             
-            # Dátum típus kényszerítése
+            # Dátum konvertálása és rendezése
             df['Dátum'] = pd.to_datetime(df['Dátum'], errors='coerce')
             df = df.dropna(subset=['Dátum']).sort_values('Dátum')
             
-            st.sidebar.success("Adatok betöltve a Google Sheets-ből!")
+            # Számmá alakítás (tisztítás a szöveges elemektől, ha lennének)
+            for col in mapping_rules.values():
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            
+            st.sidebar.success("Élő adatok betöltve!")
         else:
-            st.error("Nem találhatók a kért adatoszlopok a táblázatban.")
+            st.error("Nem találhatók a pontos oszlopnevek a táblázatban!")
             
     except Exception as e:
         st.error(f"Hiba történt: {e}")
 
 # --- MEGJELENÍTÉS ---
 if df is not None:
-    st.title(f"📊 Adatvizualizáció ({mode})")
+    st.title(f"📊 Vizualizáció ({mode})")
     
-    # Kizárjuk a Dátumot a választható listából
     numeric_options = [c for c in df.columns if c != 'Dátum']
     
     if numeric_options:
-        # Adatsimítás alkalmazása (0-k kezelése)
+        # Simítás alkalmazása (0-k kezelése)
         df_final = clean_and_interpolate(df, numeric_options)
         
-        selected_col = st.selectbox("Válaszd ki a megjelenítendő adatot:", numeric_options)
+        selected_col = st.selectbox("Válassz szempontot:", numeric_options)
         
-        # Interaktív Plotly grafikon
+        # Grafikon rajzolása
         fig = px.line(df_final, x='Dátum', y=selected_col, 
-                      title=f"{selected_col} alakulása (Interpolált adatokkal)",
+                      title=f"{selected_col} napi alakulása (Simított görbe)",
                       markers=True, 
                       template="plotly_white",
                       color_discrete_sequence=['#1f77b4'])
@@ -105,7 +106,11 @@ if df is not None:
         fig.update_layout(hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
         
-        if st.checkbox("Táblázatos nézet"):
+        # Ellenőrzés gyanánt a legfrissebb érték
+        latest_val = df_final[selected_col].iloc[-1]
+        st.metric(label=f"Utolsó ismert érték ({selected_col})", value=int(latest_val))
+        
+        if st.checkbox("Adattáblázat megjelenítése"):
             st.dataframe(df_final)
     else:
-        st.warning("Nincs megjeleníthető numerikus adat.")
+        st.warning("Nincs megjeleníthető adat.")
