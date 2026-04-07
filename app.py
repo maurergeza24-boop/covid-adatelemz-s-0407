@@ -3,53 +3,84 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 
-st.set_page_config(page_title="COVID-19 Magyarország", layout="wide")
+st.set_page_config(page_title="COVID-19 Vizualizáció", layout="wide")
 
-st.title("🦠 Koronavírus Adatvizualizáció")
+# --- OLDALSÁV ---
+st.sidebar.title("Beállítások")
+mode = st.sidebar.radio("Adatforrás:", ["Szimulált adatok", "Excel/CSV feltöltése"])
 
-# Oszlopok megfeleltetése a csatolt fájl alapján
-column_map = {
-    'Az új elhunytak száma naponta': 'Új elhunytak',
-    'Új gyógyultak naponta': 'Új gyógyultak',
-    'Kórházi ápoltak száma': 'Kórházi ápoltak',
-    'Lélegeztetőgépen lévők száma': 'Lélegeztetőgépen'
+# Keresett kulcsszavak az oszlopnevekben
+mapping = {
+    "elhunyt": "Új elhunytak száma",
+    "gyógyult": "Új gyógyultak száma",
+    "kórház": "Kórházi ápoltak száma",
+    "lélegeztető": "Lélegeztetőgépen lévők"
 }
 
-# Fájl beolvasása (Streamlit feltöltő vagy helyi fájl)
-uploaded_file = st.sidebar.file_uploader("Válaszd ki a korona_hun.xlsx-et vagy a CSV-t", type=["xlsx", "csv"])
-
-if uploaded_file is not None:
-    # Beolvasás (ha CSV, akkor read_csv, ha Excel, akkor read_excel)
-    if uploaded_file.name.endswith('.csv'):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
-
-    # Dátum konvertálása
-    df['Dátum'] = pd.to_datetime(df['Dátum'])
+def load_data():
+    if mode == "Szimulált adatok":
+        # 100 napos tesztadat generálása
+        dates = pd.date_range(start="2022-01-01", periods=100)
+        data = pd.DataFrame({
+            'Dátum': dates,
+            'Új elhunytak száma': np.random.randint(0, 40, 100),
+            'Új gyógyultak száma': np.random.randint(100, 500, 100),
+            'Kórházi ápoltak száma': np.random.randint(500, 2500, 100),
+            'Lélegeztetőgépen lévők': np.random.randint(20, 150, 100)
+        })
+        # Néhány véletlenszerű nulla a simítás teszteléséhez
+        for col in data.columns[1:]:
+            data.loc[np.random.choice(data.index, 5), col] = 0
+        return data
     
-    # Csak a releváns oszlopok megtartása
-    available_cols = [col for col in column_map.keys() if col in df.columns]
-    plot_df = df[['Dátum'] + available_cols].copy()
+    else:
+        file = st.sidebar.file_uploader("Töltsd fel a fájlt", type=["xlsx", "csv"])
+        if file is not None:
+            df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
+            
+            # Dátum oszlop keresése és rendbetétele
+            if 'Dátum' in df.columns:
+                df['Dátum'] = pd.to_datetime(df['Dátum'])
+            
+            # Oszlopok intelligens párosítása
+            new_columns = {'Dátum': 'Dátum'}
+            for original_col in df.columns:
+                lower_col = original_col.lower()
+                for key, friendly_name in mapping.items():
+                    if key in lower_col:
+                        new_columns[original_col] = friendly_name
+            
+            df = df[list(new_columns.keys())].rename(columns=new_columns)
+            return df
+        return None
 
-    # --- ADATSIMÍTÁS (A kért logika: 0 értékek helyett átlagolás) ---
-    for col in available_cols:
-        # A 0 értékek ideiglenes cseréje NaN-ra a számoláshoz
-        plot_df[col] = plot_df[col].replace(0, np.nan)
-        # Lineáris interpoláció (előtte-utána átlaga)
-        plot_df[col] = plot_df[col].interpolate(method='linear', limit_direction='both')
-        # Visszaalakítás kerekített számokká
-        plot_df[col] = plot_df[col].fillna(0).astype(int)
+df = load_data()
+
+if df is not None:
+    st.title(f"📊 Vizualizáció: {mode}")
+    
+    # Csak a numerikus oszlopok (kivéve Dátum)
+    numeric_cols = [c for c in df.columns if c != 'Dátum']
+    
+    # --- ADATSIMÍTÁS LOGIKA ---
+    # 0 értékek cseréje NaN-ra, majd interpoláció (átlagolás)
+    df_clean = df.copy()
+    for col in numeric_cols:
+        df_clean[col] = df_clean[col].replace(0, np.nan)
+        df_clean[col] = df_clean[col].interpolate(method='linear', limit_direction='both')
+        df_clean[col] = df_clean[col].fillna(0).astype(int)
 
     # Megjelenítés
-    selected_display_name = st.selectbox("Válassz szempontot:", [column_map[c] for c in available_cols])
+    selected_col = st.selectbox("Válassz szempontot a grafikonhoz:", numeric_cols)
     
-    # Visszakeressük az eredeti oszlopnevet a megjelenített név alapján
-    actual_col = [k for k, v in column_map.items() if v == selected_display_name][0]
-
-    fig = px.line(plot_df, x='Dátum', y=actual_col, title=f"{selected_display_name} idősoros alakulása")
+    fig = px.line(df_clean, x='Dátum', y=selected_col, 
+                  title=f"{selected_col} alakulása (simított görbe)",
+                  markers=True, template="plotly_white")
+    
+    fig.update_layout(hovermode="x unified")
     st.plotly_chart(fig, use_container_width=True)
     
-    st.success("Adatsimítás (nullák átlagolása) elvégezve.")
+    if st.checkbox("Nyers adatok táblázata"):
+        st.write(df_clean)
 else:
-    st.info("Kérlek töltsd fel a fájlt a bal oldali menüben a kezdéshez.")
+    st.warning("Várjuk az adatokat... Válaszd a 'Szimulált adatok' módot vagy tölts fel egy fájlt!")
